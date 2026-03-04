@@ -16,8 +16,11 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
+
+struct curl_slist;
 
 namespace ROOT {
 namespace Internal {
@@ -25,6 +28,12 @@ namespace Internal {
 /// Encapsulates a curl easy handle and provides an interface to send HTTP HEAD and (multi-)range queries.
 class RCurlConnection {
 public:
+   struct RS3Credentials {
+      std::string fAccessKey;
+      std::string fSecretKey;
+      std::string fRegion;
+   };
+
    /// Return value for both HEAD and GET requests. In case of errors, provides the reason for the failure as code
    /// and as message.
    struct RStatus {
@@ -53,10 +62,15 @@ private:
    std::size_t fMaxNRangesPerReqest = 0;
    std::string fEscapedUrl;              ///< The URL provided in the constructor escaped according to standard rules
    std::unique_ptr<char[]> fErrorBuffer; ///< For use by libcurl
+   curl_slist *fHeaders = nullptr;       ///< Optional custom request headers
+   std::optional<RS3Credentials> fS3Credentials; ///< Optional S3 credentials
 
    void SetupErrorBuffer();
    void SetOptions();
    RResult<void> SetUrl(const std::string &url);
+   void ClearHeaders();
+   void AddHeader(const std::string &header);
+   void ApplyHeaders();
    void Perform(RStatus &status);
 
 public:
@@ -92,6 +106,7 @@ public:
 
    const std::string &GetEscapedUrl() const { return fEscapedUrl; }
 
+   void SetS3Credentials(const RS3Credentials &creds);
    void SetMaxNRangesPerRequest(std::size_t val) { fMaxNRangesPerReqest = val; }
    std::size_t GetMaxNRangesPerRequest() const { return fMaxNRangesPerReqest; }
 };

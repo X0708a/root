@@ -592,6 +592,7 @@ ROOT::Internal::RCurlConnection::RCurlConnection(const std::string &url)
 
 ROOT::Internal::RCurlConnection::~RCurlConnection()
 {
+   ClearHeaders();
    if (fHandle)
       curl_easy_cleanup(fHandle);
 }
@@ -599,6 +600,7 @@ ROOT::Internal::RCurlConnection::~RCurlConnection()
 ROOT::Internal::RCurlConnection::RCurlConnection(RCurlConnection &&other)
 {
    std::swap(fHandle, other.fHandle);
+   std::swap(fHeaders, other.fHeaders);
    SetupErrorBuffer();
 }
 
@@ -606,8 +608,11 @@ ROOT::Internal::RCurlConnection &ROOT::Internal::RCurlConnection::RCurlConnectio
 {
    if (this == &other)
       return *this;
+   ClearHeaders();
    fHandle = other.fHandle;
    other.fHandle = nullptr;
+   fHeaders = other.fHeaders;
+   other.fHeaders = nullptr;
    SetupErrorBuffer();
    return *this;
 }
@@ -673,6 +678,33 @@ ROOT::RResult<void> ROOT::Internal::RCurlConnection::SetUrl(const std::string &u
    return RResult<void>::Success();
 }
 
+void ROOT::Internal::RCurlConnection::ClearHeaders()
+{
+   if (fHandle) {
+      auto rc = curl_easy_setopt(fHandle, CURLOPT_HTTPHEADER, NULL);
+      R__ASSERT(rc == CURLE_OK);
+   }
+   if (fHeaders) {
+      curl_slist_free_all(fHeaders);
+      fHeaders = nullptr;
+   }
+}
+
+void ROOT::Internal::RCurlConnection::AddHeader(const std::string &header)
+{
+   auto *headers = curl_slist_append(fHeaders, header.c_str());
+   if (!headers) {
+      throw RException(R__FAIL("cannot append HTTP header"));
+   }
+   fHeaders = headers;
+}
+
+void ROOT::Internal::RCurlConnection::ApplyHeaders()
+{
+   auto rc = curl_easy_setopt(fHandle, CURLOPT_HTTPHEADER, fHeaders);
+   R__ASSERT(rc == CURLE_OK);
+}
+
 void ROOT::Internal::RCurlConnection::Perform(RStatus &status)
 {
    auto rc = curl_easy_perform(fHandle);
@@ -727,7 +759,26 @@ ROOT::Internal::RCurlConnection::RStatus ROOT::Internal::RCurlConnection::SendHe
 #endif
 
    RStatus status;
+   std::string awsSigv4;
+   std::string userPwd;
+   if (fS3Credentials) {
+      awsSigv4 = "aws:amz:" + fS3Credentials->fRegion + ":s3";
+      rc = curl_easy_setopt(fHandle, CURLOPT_AWS_SIGV4, awsSigv4.c_str());
+      R__ASSERT(rc == CURLE_OK);
+
+      userPwd = fS3Credentials->fAccessKey + ":" + fS3Credentials->fSecretKey;
+      rc = curl_easy_setopt(fHandle, CURLOPT_USERPWD, userPwd.c_str());
+      R__ASSERT(rc == CURLE_OK);
+   }
+   ApplyHeaders();
    Perform(status);
+   if (fS3Credentials) {
+      rc = curl_easy_setopt(fHandle, CURLOPT_AWS_SIGV4, nullptr);
+      R__ASSERT(rc == CURLE_OK);
+      rc = curl_easy_setopt(fHandle, CURLOPT_USERPWD, nullptr);
+      R__ASSERT(rc == CURLE_OK);
+   }
+   ClearHeaders();
    if (status) {
       curl_off_t length = -1;
       rc = curl_easy_getinfo(fHandle, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &length);
@@ -743,6 +794,7 @@ ROOT::Internal::RCurlConnection::SendRangesReq(std::size_t N, RUserRange *ranges
 {
    if (N == 0) {
       // Pretend that we submitted a successful request
+      ClearHeaders();
       return RStatus(RStatus::kSuccess);
    }
 
@@ -758,6 +810,7 @@ ROOT::Internal::RCurlConnection::SendRangesReq(std::size_t N, RUserRange *ranges
    const auto requestRanges = CreateRequestRanges(ranges, order);
    if (requestRanges.empty()) {
       // In this case, we know that we did not apply any displacements
+      ClearHeaders();
       return RStatus(RStatus::kSuccess);
    }
 
@@ -809,7 +862,26 @@ ROOT::Internal::RCurlConnection::SendRangesReq(std::size_t N, RUserRange *ranges
          }
 
          transfer.fResponseCode = 0; // reset HTTP response code for the next request
+         std::string awsSigv4;
+         std::string userPwd;
+         if (fS3Credentials) {
+            awsSigv4 = "aws:amz:" + fS3Credentials->fRegion + ":s3";
+            rc = curl_easy_setopt(fHandle, CURLOPT_AWS_SIGV4, awsSigv4.c_str());
+            R__ASSERT(rc == CURLE_OK);
+
+            userPwd = fS3Credentials->fAccessKey + ":" + fS3Credentials->fSecretKey;
+            rc = curl_easy_setopt(fHandle, CURLOPT_USERPWD, userPwd.c_str());
+            R__ASSERT(rc == CURLE_OK);
+         }
+         ApplyHeaders();
          Perform(status);
+         if (fS3Credentials) {
+            rc = curl_easy_setopt(fHandle, CURLOPT_AWS_SIGV4, nullptr);
+            R__ASSERT(rc == CURLE_OK);
+            rc = curl_easy_setopt(fHandle, CURLOPT_USERPWD, nullptr);
+            R__ASSERT(rc == CURLE_OK);
+         }
+         ClearHeaders();
          if ((status.fStatusCode == RStatus::kTooManyRanges) && (batchSize > 1)) {
             batchSize /= 2;
             tryAgain = true;
@@ -830,4 +902,9 @@ ROOT::Internal::RCurlConnection::SendRangesReq(std::size_t N, RUserRange *ranges
    ReverseDisplacements(displacements, ranges, order, static_cast<bool>(status));
 
    return status;
+}
+
+void ROOT::Internal::RCurlConnection::SetS3Credentials(const RS3Credentials &creds)
+{
+   fS3Credentials = creds;
 }

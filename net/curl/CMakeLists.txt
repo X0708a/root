@@ -25,4 +25,7 @@ if(NOT MSVC)
   target_compile_options(RCurlHttp PRIVATE -Wno-deprecated-declarations)
 endif()
 
+
 ROOT_ADD_TEST_SUBDIRECTORY(test)
+add_executable(test_rcurl_tmp test_rcurl_tmp.cxx)
+target_link_libraries(test_rcurl_tmp PRIVATE RCurlHttp)
